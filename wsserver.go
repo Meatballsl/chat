@@ -1,10 +1,12 @@
 package main
 
 import (
-	"golang.org/x/net/websocket"
+
 	"iGong/util/log"
 	"net/http"
-	"iGong/json"
+	"encoding/json"
+    "github.com/gorilla/websocket"
+	"github.com/satori/go.uuid"
 )
 
 // 定义一个conn
@@ -16,10 +18,10 @@ type Client struct {
 
 // 定义一个客户端管理器,管理所有conn ，为什么*Client 要有个*，因为是client的地址。
 type ClientManager struct {
-	//为什么*Client 要有个*
+	//为什么*Client 要有个*,如何给clients 赋值
 	clients map[*Client]bool
 
-	//用于广播的配置？
+	//里面装广播的内容
 	broadcast chan []byte
 
 	//chan 里面的都是client的地址
@@ -60,20 +62,106 @@ func (m *ClientManager) start() {
 	for {
 		select {
 		case conn := <-m.register:
-			//有哪些是通的conn,把通的conn置true，并发送消息
+			//有新的conn来了，给其他人发通知说有新朋友来了
 			m.clients[conn] = true
+			//这边为什么要用&
 			jsonMessage, _ := json.Marshal(&Message{Content: "a new socket"})
 			m.send(jsonMessage, conn)
 		case conn := <-m.unregister:
-			//有哪些是不通的,把不通的先关闭
-				if _,ok := m.clients[conn];ok{
-					//为什么是这样关闭
+			//有人走了
+			if _, ok := m.clients[conn]; ok {
+				//关闭chan通道
+				close(conn.send)
+				//根据key 删除该map的值
+				delete(m.clients, conn)
+				jsonMessage, _ := json.Marshal(&Message{Content: "socket disconnect"})
+				m.send(jsonMessage,conn)
+			}
+		case message := <-m.broadcast:
+			//这个broadcase 到底装着什么呢,广播的内容???
+			for conn := range m.clients {
+				select {
+				case conn.send <- message:
+				default:
 					close(conn.send)
-					//根据key 删除该map的值
-					delete(m.clients,conn)
-					jsonMessage,_ := json.Marshal()
+					delete(m.clients, conn)
 				}
+			}
 
 		}
+	}
+}
+
+
+
+func wsPage(res http.ResponseWriter,req *http.Request)  {
+	//这个代码看不懂
+	conn,error := (&websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool {
+			return true
+		}}).Upgrade(res,req,nil)
+	if error != nil {
+		http.NotFound(res,req)
+		log.Info(error)
+	}
+	idr,_ := uuid.NewV4()
+	client := &Client{id:idr.String(),socket:conn,send:make(chan []byte)}
+	manager.register <- client
+
+
+
+}
+
+
+
+//send 给某个conn发送信息（不给自己发）？
+func (m *ClientManager) send(msg []byte,conn *Client) {
+	for conn := range m.clients {
+		if conn != conn {
+			conn.send <- msg
+		}
+	}
+}
+
+
+//从 conn里面读出数据
+func (c *Client) read (){
+	defer func() {
+		manager.unregister<-c
+		c.socket.Close()
+	}()
+	for {
+		_,msg,err := c.socket.ReadMessage()
+		if err != nil {
+			manager.unregister <- c
+			c.socket.Close()
+			break
+		}
+
+		json.Marshal(Message{Sender:c.id,Content:string(msg)})
+		manager.broadcast<-msg
+	}
+
+}
+
+
+//write 从 conn的send 里面获取数据 并发送
+func (c *Client) write() {
+
+	defer func() {
+		c.socket.Close()
+	}()
+
+	for{
+		select {
+		case msg,ok := <-c.send:
+			//这边为啥要用select呢，是怕当chan已经关闭了导致的阻塞吗。如果chan关闭了，ok 就为 false 吗？
+			if !ok{
+				c.socket.WriteMessage(websocket.CloseMessage,[]byte{})
+			}
+			c.socket.WriteMessage(websocket.TextMessage,msg)
+
+		}
+
 	}
 }
