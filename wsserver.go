@@ -62,10 +62,10 @@ func (m *ClientManager) start() {
 	for {
 		select {
 		case conn := <-m.register:
-			//有新的conn来了，给其他人发通知说有新朋友来了
+			//有新的conn来了，给其他人发通知说有新朋友来了(manager.clients[该conn]为true
 			m.clients[conn] = true
 			//这边为什么要用&
-			jsonMessage, _ := json.Marshal(&Message{Content: "a new socket"})
+			jsonMessage, _ := json.Marshal(&Message{Content: "a new friend come"})
 			m.send(jsonMessage, conn)
 		case conn := <-m.unregister:
 			//有人走了
@@ -78,7 +78,7 @@ func (m *ClientManager) start() {
 				m.send(jsonMessage,conn)
 			}
 		case message := <-m.broadcast:
-			//这个broadcase 到底装着什么呢,广播的内容???
+			//如果某个chan 已经关闭了，再往里写数据，会panic,不会发生这种情况
 			for conn := range m.clients {
 				select {
 				case conn.send <- message:
@@ -86,6 +86,7 @@ func (m *ClientManager) start() {
 					close(conn.send)
 					delete(m.clients, conn)
 				}
+
 			}
 
 		}
@@ -105,16 +106,19 @@ func wsPage(res http.ResponseWriter,req *http.Request)  {
 		log.Info(error)
 	}
 	idr,_ := uuid.NewV4()
+	//有conn来，new client，并取该对象的地址赋值给manager.register
 	client := &Client{id:idr.String(),socket:conn,send:make(chan []byte)}
 	manager.register <- client
 
+	go client.read()
+	go client.write()
 
 
 }
 
 
 
-//send 给某个conn发送信息（不给自己发）？
+//给manager 里面除了自己的conn 的send chan 里装信息
 func (m *ClientManager) send(msg []byte,conn *Client) {
 	for conn := range m.clients {
 		if conn != conn {
@@ -124,7 +128,7 @@ func (m *ClientManager) send(msg []byte,conn *Client) {
 }
 
 
-//从 conn里面读出数据
+//从 conn里面读出数据,放到broadcast,再放到各个client的send chan 里面
 func (c *Client) read (){
 	defer func() {
 		manager.unregister<-c
