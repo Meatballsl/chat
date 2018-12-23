@@ -54,7 +54,7 @@ func main() {
 
 	//客户端调用ws，会走wsPage
 	http.HandleFunc("ws", wsPage)
-	http.ListenAndServe(":9999", nil)
+	http.ListenAndServe(":12345", nil)
 }
 
 func (m *ClientManager) start() {
